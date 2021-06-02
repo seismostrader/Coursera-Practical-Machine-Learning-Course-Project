@@ -1,0 +1,210 @@
+---
+title: "Coursera Practical Machine Learning Course Project"
+author: "Anne Strader"
+date: "5/20/2021"
+output:
+  html_document: default
+---
+
+## Executive Summary
+
+Using devices such as *Jawbone Up*, *Nike Fuelband*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how *much* of a particular activity they do, but they rarely quantify *how well they do it*. 
+
+The goal of this project is to use data from accelerometers on the belt, forearm, and dumbbell of six participants to predict the manner in which they did an exercise. The participants performed the exercise six different ways: one correct way and five incorrect ways. 
+
+The data for this project come from this source: [http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har). 
+
+## Getting and Cleaning the Dataset
+
+In preparation for the analysis, necessary R libraries are loaded:
+
+```{r, warning=FALSE, message=FALSE}
+library(knitr)
+library(caret)
+library(corrplot)
+library(rattle)
+library(randomForest)
+```
+
+The training and test data are then downloaded:
+
+```{r}
+# define the URLs where the data are stored
+trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"  # training data set
+testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"  # test data set
+
+# define the source data filenames 
+fileTrainData <- "pml-training.csv"  # training data set
+fileTestData <- "pml-testing.csv"  # test data set
+
+# check if datasets have already been downloaded in working directory, and download them if not
+if (!file.exists(fileTrainData)) {  # training data set
+  download.file(trainURL, fileTrainData)
+}
+if (!file.exists(fileTestData)) {  # test data set
+  download.file(testURL, fileTestData)
+}
+```
+
+The test data set is considered to be a final "validation" set, whereas the training data set will be subdivided into a smaller training set (70% of the data) and a test set (30% of the data). 
+
+```{r}
+# read in both data sets
+trainingData <- read.csv(fileTrainData)  # training data set
+validationSet <- read.csv(fileTestData)  # test data set (validation)
+```
+
+Let's look at a summary of the training data set, in order to identify the predicted variable:
+
+```{r}
+str(trainingData)
+head(trainingData)
+```
+
+The predicted variable, or way in which the dumbbell exercise was performed, is "classe". There are 160 variables and 19622 observations.
+
+```{r}
+# subdivide training data set into training and test set
+set.seed(242)
+inTrainingSet <- createDataPartition(trainingData$classe, p=0.7, list=FALSE)
+trainingSet <- trainingData[inTrainingSet,] 
+testingSet <- trainingData[-inTrainingSet,]
+```
+
+Features that will not add any substantial information to the prediction model should be removed. These include ID variables, variables with mostly NA values, and variables with near-zero variance. 
+
+From the summary, the first five columns of the dataset can easily be interpreted as ID variables. These are removed from the training, testing and validation sets:
+
+```{r}
+trainingSet <- trainingSet[, -(1:5)]
+testingSet <- testingSet[, -(1:5)]
+validationSet <- validationSet[, -(1:5)]
+```
+
+Next, variables with "NA" values for at least 90% of observations are removed from the training, testing and validation sets, with the percentage of "NA" values based on the training set:
+
+```{r}
+mostlyNAvals <- sapply(trainingSet, function(x) mean(is.na(x))) > 0.90
+trainingSet <- trainingSet[, mostlyNAvals==FALSE]
+testingSet <- testingSet[, mostlyNAvals==FALSE]
+validationSet <- validationSet[, mostlyNAvals==FALSE]
+```
+
+Finally, near-zero variance variables are removed from the training, testing and validation sets, based on the variables' variances in the training set:
+
+```{r}
+nearZeroVar <- nearZeroVar(trainingSet)
+trainingSet <- trainingSet[, -nearZeroVar]
+testingSet <- testingSet[, -nearZeroVar]
+validationSet <- validationSet[, -nearZeroVar]
+```
+
+```{r}
+dim(trainingSet)
+```
+
+The total number of variables has been reduced from 160 to 54.
+
+## Exploratory Data Analysis
+
+To qualitatively determine if the number of features should be further reduced, the correlation values between all predictor variable pairs are plotted using the training set:
+
+```{r, fig.height=8, fig.width=8}
+correlations <- cor(trainingSet[, -length(names(trainingSet))])
+par(xpd=TRUE)
+corrplot(correlations, method="color", type="lower", tl.cex=0.6, tl.col=rgb(0, 0, 0), order = "FPC", mar = c(2, 2, 2, 2))
+```
+
+Although most predictor variable pairs have a low correlation, there are some variable pairs that appear to be nearly perfectly correlated or anticorrelated. Applying Principal Component Analysis (PCA) would further reduce the number of features. However, the interpretability of the prediction model would also be greatly reduced by creating features out of combinations of individual predictor variables. Ideally, the resulting prediction model could be used to also provide user specific feedback regarding why an exercise was performed incorrectly. Therefore, PCA will not be applied here.
+
+## Prediction Model Building and Model Selection
+
+Three prediction models are built from the training set, using 5-fold cross-validation, and then applied to the testing set to determine the expected out-of-sample error. The model with the highest accuracy, i.e. lowest out-of-sample error, is selected and used to predict the activity type from the validation dataset. For this project, only accuracy will be considered in model selection, although with more information about how the model would be implemented, other factors such as scalability and interpretability could be just as important to take into account.
+
+Before the models are built, the cross-validation parameters are set:
+
+```{r}
+cvControl <- trainControl(method="cv", number=5, verboseIter=FALSE)
+```
+
+### Model 1: Support-Vector Machine
+
+The support-vector machine model is built from the training data:
+
+```{r, cache=TRUE}
+model_SVM <- train(classe ~ ., data=trainingSet, method="svmLinear", trcontrol=cvControl, tuneLength=5, verbose=F)
+```
+
+and used to predict activity type from the testing data:
+
+```{r}
+predictions_SVM <- predict(model_SVM, testingSet)
+```
+
+with the following results:
+
+```{r}
+results_SVM <- confusionMatrix(predictions_SVM, factor(testingSet$classe))
+results_SVM
+```
+
+The accuracy of the support-vector machine model is **0.7924** with an out-of-sample error of **0.2076**.
+
+### Model 2: Decision Tree Model
+
+The decision tree model is built from the training data:
+
+```{r, fig.height=12, fig.width=12, cache=TRUE}
+model_DT <- train(classe ~ ., data=trainingSet, method="rpart", trControl=cvControl, tuneLength=5)
+fancyRpartPlot(model_DT$finalModel)
+```
+
+and used to predict activity type from the testing data:
+
+```{r}
+predictions_DT <- predict(model_DT, testingSet)
+```
+
+with the following results:
+
+```{r}
+results_DT <- confusionMatrix(predictions_DT, factor(testingSet$classe))
+results_DT
+```
+
+The accuracy of the decision tree model is **0.6245** with an out-of-sample error of **0.3755**.
+
+### Model 3: Random Forest Model
+
+The random forest model is built from the training data:
+
+```{r, cache=TRUE}
+model_RF <- train(classe ~ ., data=trainingSet, method="rf", trainControl=cvControl, tuneLength=5)
+```
+
+and used to predict activity type from the testing data:
+
+```{r}
+predictions_RF <- predict(model_RF, testingSet)
+```
+
+with the following results:
+
+```{r}
+results_RF <- confusionMatrix(predictions_RF, factor(testingSet$classe))
+results_RF
+```
+
+The accuracy of the random forest model is **0.9976** with an out-of-sample error of **0.0024**.
+
+Because the out-of-sample error is substantially lower when applying the random forest model compared to the decision tree and support-vector machine model, the random forest model is chosen to predict the class of activity from the validation data.
+
+## Predictions from Validation Data
+
+In the last step, activity type is predicted from the validation set. All data pre-processing has already been applied to the validation set in previous steps.
+
+```{r}
+predictValidation <- predict(model_RF, validationSet)
+predictValidation
+```
+
